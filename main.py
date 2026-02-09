@@ -217,20 +217,15 @@ def detect_and_interpolate_charuco(gray, board, dictionary, detector, charuco_de
             if marker_ids is None or len(marker_ids) == 0:
                 return fail
 
-            # Try interpolation methods
-            if hasattr(board, 'matchImagePoints'):
-                charuco_corners, charuco_ids = board.matchImagePoints(marker_corners, marker_ids)
-                if charuco_ids is not None and len(charuco_ids) > 5:
+            # Interpolate ChArUco corners from detected ArUco markers
+            try:
+                retval, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
+                    marker_corners, marker_ids, gray, board
+                )
+                if retval and charuco_ids is not None and len(charuco_ids) > 5:
                     return True, marker_corners, marker_ids, charuco_corners, charuco_ids
-            else:
-                try:
-                    retval, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
-                        marker_corners, marker_ids, gray, board
-                    )
-                    if retval and charuco_ids is not None and len(charuco_ids) > 5:
-                        return True, marker_corners, marker_ids, charuco_corners, charuco_ids
-                except AttributeError:
-                    pass
+            except AttributeError:
+                pass
 
             return fail
         except Exception as e:
@@ -386,8 +381,12 @@ def calibrate_camera_new_api(all_charuco_corners, all_charuco_ids, board, image_
     return ret, camera_matrix, dist_coeffs, rvecs, tvecs
 
 
-def calibrate_from_frames(frames, board, dictionary, detector, charuco_detector, api_type):
-    """Calibrate camera from a list of frames."""
+def calibrate_from_frames(frames, board, dictionary, detector, charuco_detector, api_type, camera_type="Custom / Generic"):
+    """Calibrate camera from a list of frames.
+
+    Args:
+        camera_type: Label for the camera model used in output metadata.
+    """
     all_charuco_corners = []
     all_charuco_ids = []
     frames_used = 0
@@ -504,11 +503,9 @@ def calibrate_from_frames(frames, board, dictionary, detector, charuco_detector,
         "lensmodel": "LENSMODEL_OPENCV"
     }
 
-    cam_type = selected_camera_type
-
     return {
         "success": True,
-        "camera_model": cam_type,
+        "camera_model": camera_type,
         "calibration_quality": calibration_quality,
         "reprojection_error": {
             "mean": float(mean_error),
@@ -565,7 +562,7 @@ def assess_calibration_quality(reprojection_error, frames_used):
     }
 
 
-def calibrate_from_video(video_path):
+def calibrate_from_video(video_path, camera_type="Custom / Generic"):
     """Calibrate from video file"""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -597,7 +594,7 @@ def calibrate_from_video(video_path):
     if len(frames) < CALIBRATION_FRAMES_NEEDED:
         return {"error": f"Not enough frames with board detected. Found {len(frames)}, need {CALIBRATION_FRAMES_NEEDED}"}
 
-    return calibrate_from_frames(frames, board, dictionary, detector, charuco_detector, api_type)
+    return calibrate_from_frames(frames, board, dictionary, detector, charuco_detector, api_type, camera_type=camera_type)
 
 
 def generate_frames():
@@ -1299,7 +1296,11 @@ ${JSON.stringify(r.photonvision, null, 2)}
 @app.route('/start_capture', methods=['POST'])
 def start_capture_endpoint():
     global selected_camera_type
-    data = request.json
+
+    data = request.get_json(silent=True)
+    if not data or not isinstance(data, dict):
+        return jsonify({"status": "error", "error": "Missing or malformed JSON body"}), 400
+
     width = data.get('width', 640)
     height = data.get('height', 480)
     cam_type = data.get('camera_type', 'Custom / Generic')
@@ -1368,7 +1369,7 @@ def calibrate_from_capture_endpoint():
         frames_to_use = captured_frames[::step]
 
     board, dictionary, detector, charuco_detector, api_type = create_charuco_board_and_detector()
-    result = calibrate_from_frames(frames_to_use, board, dictionary, detector, charuco_detector, api_type)
+    result = calibrate_from_frames(frames_to_use, board, dictionary, detector, charuco_detector, api_type, camera_type=selected_camera_type)
 
     if "error" in result:
         return jsonify(result), 400
@@ -1394,7 +1395,7 @@ def calibrate_camera_endpoint():
         temp_path = tmp.name
 
     try:
-        result = calibrate_from_video(temp_path)
+        result = calibrate_from_video(temp_path, camera_type=cam_type)
         os.unlink(temp_path)
         if "error" in result:
             return jsonify(result), 400
